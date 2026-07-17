@@ -18,6 +18,42 @@ The system retrieves specific fashion images based on natural language descripti
 
 ---
 
+## 💡 Fusing CLIP with SQLite Metadata: Why it works
+Traditional multimodal search systems rely entirely on **Vanilla CLIP** (vector-only search). While CLIP has strong general zero-shot semantic understanding, it suffers from two major limitations on fashion queries:
+
+1. **Color Leakage / Compositional Confusion**: If you search for *"a blue shirt and red pants"*, vanilla CLIP will often retrieve an image of a *"red shirt and blue pants"*. This happens because CLIP compresses the entire image context into a single embedding, losing the structural connection (binding) between a specific garment and its color.
+2. **Background Bias**: A query like *"a person in formal attire in an office"* can cause vanilla CLIP to retrieve standard office environments even if the person inside is wearing casual clothing (e.g. a hoodie), because the office background dominates the image's vector representation.
+
+### Our Solution: Hybrid Fused Search
+Instead of using CLIP in isolation, this system fuses **CLIP's semantic retrieval** with **SQLite-backed structured metadata filters**:
+
+```
+[User Query] ➔ OpenCLIP ➔ FAISS Index Search ➔ [Top 100 Candidates]
+                                                        │
+                                                        ▼
+                                             SQLite Metadata Fetch
+                                                        │
+                                      ┌─────────────────┴─────────────────┐
+                                      ▼                                   ▼
+                             Color-Binding Check                 Attribute Alignment
+                         e.g., Is "shirt" bound to "blue"?      e.g., Match scene & style
+                                      └─────────────────┬─────────────────┘
+                                                        ▼
+                                             Late-Fusion Re-ranking
+                                                        ▼
+                                                 Top-K Results
+```
+
+#### How the Retrieval Logic Prevents Mismatches:
+- **FAISS Candidate Generation**: The query is embedded via CLIP to search the FAISS index and quickly extract the **Top-100 most similar candidate images** (ensuring high scalability).
+- **Query Parsing**: The search query is parsed for specific garment-color pairings (e.g., mapping *"blue shirt"* as `shirt: blue` and *"red tie"* as `tie: red`).
+- **Metadata Re-ranking (SQLite)**: We pull the candidate attributes (garment categories, colors, scenes, and styles) from SQLite and run a strict **Color-Binding Check**.
+  - If a candidate contains a shirt and jeans but the **shirt color is white** instead of the requested **blue**, the system assigns a `Color Binding score of 0.0`.
+  - Because color binding contributes **15%** of the score and category matching contributes **20%**, mismatched garment colors are penalized heavily. 
+  - This ensures that a blue shirt in an outdoor setting correctly ranks higher than a white shirt in a park setting, even if the user queried for a park environment!
+
+---
+
 ## 🗺️ High-Level Architecture Diagram
 ```
                            Dataset Images
