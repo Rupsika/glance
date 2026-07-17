@@ -1,7 +1,8 @@
 # Glance ML Internship Assignment: Multimodal Fashion & Context Retrieval
 **Author:** Candidate (ML Engineering Intern)  
 **Date:** July 2026  
-**GitHub Repository Code:** [indexer.py](src/indexer.py), [retriever.py](src/retriever.py), [app.py](app.py), [main.py](main.py)
+**GitHub Repository:** [https://github.com/Rupsika/glance](https://github.com/Rupsika/glance)  
+**Codebase Files:** [indexer.py](src/indexer.py), [retriever.py](src/retriever.py), [app.py](app.py), [main.py](main.py)
 
 ---
 
