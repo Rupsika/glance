@@ -18,6 +18,43 @@ The system retrieves specific fashion images based on natural language descripti
 
 ---
 
+## 🗺️ High-Level Architecture Diagram
+```
+                           Dataset Images
+                                 │
+                                 ▼
+                     Offline Indexing Pipeline
+                                 │
+     ┌───────────────┬───────────────┬───────────────┐
+     │               │               │               │
+     ▼               ▼               ▼               ▼
+ OpenCLIP      Fashion Parser   Scene Model      BLIP Captioner
+     │               │               │               │
+     │               │               │               │
+     ▼               ▼               ▼               ▼
+ Semantic      Clothing & Colors   Environment    Image Caption
+ Embeddings
+     └───────────────┬───────────────┬───────────────┘
+                     │
+                     ▼
+             Metadata Construction
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+      FAISS Index          SQLite Database
+                     │
+                     ▼
+               Query Processing
+                     │
+                     ▼
+              Hybrid Re-ranking
+                     │
+                     ▼
+                  Top-K Results
+```
+
+---
+
 ## 📂 Codebase Structure
 ```
 glance/
