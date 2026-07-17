@@ -1,0 +1,5 @@
+{
+  "clip_model": "openai/clip-vit-base-patch32",
+  "embedding_dim": 512,
+  "total_records": 1000
+}

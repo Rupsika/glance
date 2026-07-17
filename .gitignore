@@ -1,0 +1,18 @@
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large Dataset Folder
+val_test2020/
+
+# YOLO weights
+yolov8n.pt
+
+# Environment/OS
+.DS_Store
+Thumbs.db
+.env
+.venv/
+env/
+venv/
