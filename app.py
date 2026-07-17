@@ -255,33 +255,47 @@ eval_queries = [
     "A red tie and a white shirt in a formal setting."
 ]
 
-# Synchronize selectbox selection with session state search_query
-default_idx = 0
-if st.session_state.search_query in eval_queries:
-    default_idx = eval_queries.index(st.session_state.search_query) + 1
+# Initialize widget session states
+if "preset_select" not in st.session_state:
+    if st.session_state.search_query in eval_queries:
+        st.session_state.preset_select = st.session_state.search_query
+    else:
+        st.session_state.preset_select = "Custom Search (Type below)..."
+
+if "search_input_widget" not in st.session_state:
+    st.session_state.search_input_widget = st.session_state.search_query
+
+# Callback for selectbox change
+def on_preset_change():
+    selected = st.session_state.preset_select
+    if selected != "Custom Search (Type below)...":
+        st.session_state.search_query = selected
+        st.session_state.search_input_widget = selected
+
+# Callback for text input change
+def on_text_change():
+    typed = st.session_state.search_input_widget
+    st.session_state.search_query = typed
+    if typed in eval_queries:
+        st.session_state.preset_select = typed
+    else:
+        st.session_state.preset_select = "Custom Search (Type below)..."
 
 st.markdown('<p class="presets-label">💡 Preset Evaluation Queries:</p>', unsafe_allow_html=True)
 preset_query = st.selectbox(
     "Select a preset query to auto-populate search:",
     options=["Custom Search (Type below)..."] + eval_queries,
-    index=default_idx,
-    key="preset_select"
+    key="preset_select",
+    on_change=on_preset_change
 )
-
-if preset_query != "Custom Search (Type below)...":
-    st.session_state.search_query = preset_query
 
 # Main query input
 st.write("---")
 user_input = st.text_input(
     "Or type your custom natural language query below:",
-    value=st.session_state.search_query,
-    key="search_input_widget"
+    key="search_input_widget",
+    on_change=on_text_change
 )
-
-# Synchronize typed query back to session state
-if user_input != st.session_state.search_query:
-    st.session_state.search_query = user_input
 
 # Execute Search
 if st.session_state.search_query:
