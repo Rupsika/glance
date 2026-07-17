@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import sqlite3
 import argparse
 import numpy as np
 import torch
@@ -8,23 +9,17 @@ import faiss
 from transformers import CLIPProcessor, CLIPModel
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Multimodal Fashion & Context Retriever")
+    parser = argparse.ArgumentParser(description="Multimodal Fashion & Context Retriever (SQLite + FAISS)")
     parser.add_argument("--query", type=str, required=True, help="Natural language search query")
-    parser.add_argument("--index_dir", type=str, default="index_db", help="Path to index and metadata folder")
+    parser.add_argument("--index_dir", type=str, default="index_db", help="Path to index and database folder")
     parser.add_argument("--data_dir", type=str, default="val_test2020/test", help="Path to raw image folder")
     parser.add_argument("--top_k", type=int, default=5, help="Number of images to retrieve")
-    parser.add_argument("--w_global", type=float, default=0.4, help="Weight for global scene matching")
-    parser.add_argument("--w_upper", type=float, default=0.3, help="Weight for upper body matching")
-    parser.add_argument("--w_lower", type=float, default=0.3, help="Weight for lower body matching")
     return parser.parse_args()
 
 def load_resources(index_dir, device):
     # Load configs
     with open(os.path.join(index_dir, "config.json"), "r") as f:
         config = json.load(f)
-    
-    with open(os.path.join(index_dir, "metadata.json"), "r") as f:
-        metadata = json.load(f)
         
     clip_model_name = config["clip_model"]
     
@@ -34,179 +29,227 @@ def load_resources(index_dir, device):
     processor = CLIPProcessor.from_pretrained(clip_model_name)
     model.eval()
     
-    # Load FAISS indexes
-    print("Loading FAISS vector indexes...")
+    # Load FAISS index
+    print("Loading FAISS vector index...")
     global_index = faiss.read_index(os.path.join(index_dir, "global.index"))
-    upper_index = faiss.read_index(os.path.join(index_dir, "upper.index"))
-    lower_index = faiss.read_index(os.path.join(index_dir, "lower.index"))
     
-    return model, processor, metadata, global_index, upper_index, lower_index
+    return model, processor, global_index
 
-def parse_query(query, model=None, processor=None, device=None):
+def parse_query(query):
     """
-    Decomposes a query sentence into global context, upper body, and lower body sub-phrases.
-    Uses a hybrid approach:
-    1. Strong keyword routing for robust baseline matching (evaluation queries).
-    2. Zero-shot CLIP classifier fallback for novel out-of-vocabulary garment terms.
+    Decomposes a query sentence into structured components (scene, style, clothes list, color bindings).
     """
-    # Split query into sub-phrases by conjunctions / prepositions
-    phrases = re.split(r'\b(?:and|with|in|sitting on|inside|at|on|for a)\b', query, flags=re.IGNORECASE)
-    phrases = [p.strip() for p in phrases if p.strip()]
+    query_lower = query.lower()
     
-    upper_phrases = []
-    lower_phrases = []
-    global_phrases = []
+    colors = ["red", "blue", "yellow", "black", "white", "brown", "green", "grey", "orange"]
+    query_colors = [c for c in colors if c in query_lower]
     
-    # 1. Expanded keyword lists for high-precision matching of common terms
-    upper_keywords = ["shirt", "t-shirt", "tshirt", "tie", "blazer", "hoodie", "jacket", "coat", "raincoat", 
-                      "sweater", "blouse", "top", "suit", "cardigan", "outerwear", "button-down", "vest",
-                      "attire", "clothing", "wear", "apparel"]
-    lower_keywords = ["pants", "jeans", "shorts", "skirt", "trousers", "leggings", "sneakers", "boots", "shoes", "footwear"]
-    env_keywords = ["office", "street", "park", "bench", "home", "indoor", "outdoor", "walk", "setting", 
-                    "background", "garden", "nature", "outside", "inside", "interior", "office interior", "modern office"]
+    clothes = ["shirt", "t-shirt", "tshirt", "blazer", "hoodie", "jacket", "coat", "sweater", "tie", "dress", 
+               "pants", "jeans", "shorts", "skirt", "shoes", "boots", "bag", "hat", "attire", "suit", "raincoat"]
     
-    # Lazy load CLIP categories if model is available
-    cat_features = None
-    if model is not None and processor is not None and device is not None:
-        categories = [
-            "clothing garment worn on the upper body, top, shirt, jacket, blazer, tie, coat, sweater, or outerwear",
-            "clothing garment worn on the lower body, pants, trousers, jeans, skirt, shorts, leggings, shoes, or boots",
-            "scenery, background, location, setting, place, environment, room, office, street, park, bench, or weather"
-        ]
-        import torch
-        cat_inputs = processor(text=categories, return_tensors="pt", padding=True).to(device)
-        with torch.no_grad():
-            cat_features = model.get_text_features(**cat_inputs)
-            cat_features = cat_features / cat_features.norm(dim=-1, keepdim=True)
-            
-    for phrase in phrases:
-        phrase_lower = phrase.lower()
-        matched = False
-        
-        # 1. Check strong environment keywords first (routes "office", "park bench", etc.)
-        if any(ek in phrase_lower for ek in env_keywords):
-            global_phrases.append(phrase)
-            matched = True
-            
-        # 2. Check lower-body keywords (routes "pants", "shoes", etc.)
-        elif any(lk in phrase_lower for lk in lower_keywords):
-            lower_phrases.append(phrase)
-            matched = True
-            
-        # 3. Check upper-body keywords (routes "shirt", "attire", etc.)
-        elif any(uk in phrase_lower for uk in upper_keywords):
-            upper_phrases.append(phrase)
-            matched = True
-            
-        # 4. Fallback to CLIP zero-shot text classifier for novel terms (e.g. kimono, poncho, overalls)
-        if not matched:
-            if cat_features is not None:
-                phrase_inputs = processor(text=[phrase], return_tensors="pt", padding=True).to(device)
-                with torch.no_grad():
-                    phrase_feature = model.get_text_features(**phrase_inputs)
-                    phrase_feature = phrase_feature / phrase_feature.norm(dim=-1, keepdim=True)
-                
-                # Compute cosine similarity
-                sims = torch.matmul(phrase_feature, cat_features.T).squeeze()
-                pred_idx = sims.argmax().item()
-                
-                if pred_idx == 0:
-                    upper_phrases.append(phrase)
-                elif pred_idx == 1:
-                    lower_phrases.append(phrase)
-                else:
-                    global_phrases.append(phrase)
+    query_clothes = []
+    for c in clothes:
+        if c in query_lower:
+            if c in ["t-shirt", "tshirt"]:
+                query_clothes.append("shirt")
+            elif c == "raincoat":
+                query_clothes.append("coat")
             else:
-                # Default fallback if no CLIP model is loaded
-                global_phrases.append(phrase)
+                query_clothes.append(c)
                 
-    # Compile parsed components
-    parsed = {
-        "global": " ".join(global_phrases) if global_phrases else query,
-        "upper": " and ".join(upper_phrases) if upper_phrases else None,
-        "lower": " and ".join(lower_phrases) if lower_phrases else None
+    # Extract color bindings (e.g., "red tie" -> tie: red)
+    color_bindings = {}
+    clauses = re.split(r'\b(?:and|with|in|sitting on|inside|at|on|for a)\b', query, flags=re.IGNORECASE)
+    for clause in clauses:
+        clause_lower = clause.strip().lower()
+        clause_color = [c for c in colors if c in clause_lower]
+        clause_item = [c for c in query_clothes if c in clause_lower]
+        if clause_color and clause_item:
+            color_bindings[clause_item[0]] = clause_color[0]
+            
+    # Extract scene
+    scenes = ["office", "park", "street", "home", "indoor", "outdoor", "cafe", "mall"]
+    query_scene = None
+    for s in scenes:
+        if s in query_lower:
+            query_scene = s
+            break
+            
+    # Extract style
+    styles = ["formal", "casual", "streetwear", "business"]
+    query_style = None
+    for st in styles:
+        if st in query_lower:
+            query_style = st
+            break
+            
+    return {
+        "colors": query_colors,
+        "clothes": list(set(query_clothes)),
+        "color_bindings": color_bindings,
+        "scene": query_scene,
+        "style": query_style
     }
-    
-    return parsed
 
 @torch.no_grad()
 def get_text_embedding(text, model, processor, device):
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
     text_features = model.get_text_features(**inputs)
-    # L2 normalize
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     return text_features.cpu().numpy().astype('float32')
 
-def search(query, index_dir, data_dir, top_k=5, w_global=0.4, w_upper=0.3, w_lower=0.3):
+def search(query, index_dir, data_dir, top_k=5):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 1. Load resources
-    model, processor, metadata, global_index, upper_index, lower_index = load_resources(index_dir, device)
+    model, processor, global_index = load_resources(index_dir, device)
     
     # 2. Parse query
-    parsed = parse_query(query, model, processor, device)
-    print("\n--- Query Decomposition ---")
+    parsed = parse_query(query)
+    print("\n--- Query Deconstruction ---")
     print(f"Original: '{query}'")
-    print(f"Parsed Global Context: '{parsed['global']}'")
-    print(f"Parsed Upper Clothing: '{parsed['upper']}'")
-    print(f"Parsed Lower Clothing: '{parsed['lower']}'")
-    print("---------------------------\n")
+    print(f"Extracted Scenes: '{parsed['scene']}'")
+    print(f"Extracted Styles: '{parsed['style']}'")
+    print(f"Extracted Clothes: {parsed['clothes']}")
+    print(f"Color Bindings: {parsed['color_bindings']}")
+    print("----------------------------\n")
     
-    # 3. Retrieve raw embeddings from FAISS
-    # We reconstruct all vectors to calculate exact cosine similarities in batch
-    n_records = len(metadata)
-    global_vecs = global_index.reconstruct_n(0, n_records)
-    upper_vecs = upper_index.reconstruct_n(0, n_records)
-    lower_vecs = lower_index.reconstruct_n(0, n_records)
+    # 3. Retrieve Top-100 candidates from FAISS
+    q_emb = get_text_embedding(query, model, processor, device)
+    D, I = global_index.search(q_emb, min(100, global_index.ntotal))
+    candidate_ids = I[0].tolist()
+    clip_scores = D[0].tolist()
     
-    # 4. Compute embeddings for query parts
-    score = np.zeros(n_records, dtype=np.float32)
-    total_weight = 0.0
+    # Connect to SQLite database to fetch metadata
+    db_path = os.path.join(index_dir, "metadata.db")
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Database metadata.db not found in {index_dir}")
+        
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
     
-    # Global matching
-    if parsed["global"]:
-        q_glob_emb = get_text_embedding(parsed["global"], model, processor, device)
-        # Cosine similarity is the dot product since vectors are normalized
-        sim_glob = np.dot(global_vecs, q_glob_emb.T).squeeze()
-        score += w_global * sim_glob
-        total_weight += w_global
-        
-    # Upper clothing matching
-    if parsed["upper"]:
-        q_upp_emb = get_text_embedding(parsed["upper"], model, processor, device)
-        sim_upp = np.dot(upper_vecs, q_upp_emb.T).squeeze()
-        score += w_upper * sim_upp
-        total_weight += w_upper
-        
-    # Lower clothing matching
-    if parsed["lower"]:
-        q_low_emb = get_text_embedding(parsed["lower"], model, processor, device)
-        sim_low = np.dot(lower_vecs, q_low_emb.T).squeeze()
-        score += w_lower * sim_low
-        total_weight += w_lower
-        
-    # Normalize score by active weights
-    if total_weight > 0:
-        score = score / total_weight
-        
-    # 5. Rank and retrieve top-k
-    top_indices = np.argsort(score)[::-1][:top_k]
+    placeholders = ",".join("?" for _ in candidate_ids)
+    cursor.execute(f"""
+        SELECT id, image_path, caption, scene, style, clothes, colors, bbox 
+        FROM metadata 
+        WHERE id IN ({placeholders})
+    """, candidate_ids)
     
-    results = []
-    for idx in top_indices:
-        meta = metadata[idx]
-        image_abs_path = os.path.join(data_dir, meta["image_path"])
-        results.append({
-            "id": meta["id"],
-            "image_path": meta["image_path"],
-            "image_abs_path": image_abs_path,
-            "has_person": meta["has_person"],
-            "bbox": meta["bbox"],
-            "score": float(score[idx])
+    rows = cursor.fetchall()
+    conn.close()
+    
+    meta_dict = {}
+    for row in rows:
+        meta_dict[row[0]] = {
+            "image_path": row[1],
+            "caption": row[2],
+            "scene": row[3],
+            "style": row[4],
+            "clothes": json.loads(row[5]),
+            "colors": json.loads(row[6]),
+            "bbox": json.loads(row[7]) if row[7] else None
+        }
+        
+    # 4. Sentence similarity of query against candidate captions in batch
+    captions = [meta_dict[cid]["caption"] for cid in candidate_ids]
+    cap_inputs = processor(text=captions, return_tensors="pt", padding=True).to(device)
+    with torch.no_grad():
+        cap_features = model.get_text_features(**cap_inputs)
+        cap_features = cap_features / cap_features.norm(dim=-1, keepdim=True)
+    
+    q_tensor = torch.tensor(q_emb).to(device)
+    cap_sims = torch.matmul(q_tensor, cap_features.T).squeeze().cpu().numpy()
+    
+    # Handle single element edge-case
+    if len(candidate_ids) == 1:
+        cap_sims = np.array([cap_sims])
+        
+    # 5. Hybrid re-ranking
+    ranked_results = []
+    for i, cid in enumerate(candidate_ids):
+        cand_meta = meta_dict[cid]
+        
+        # Clip Score
+        score_clip = clip_scores[i]
+        
+        # Caption similarity
+        score_caption = float(cap_sims[i])
+        
+        # Clothing category Jaccard match
+        q_clothes = parsed["clothes"]
+        cand_clothes = cand_meta["clothes"]
+        if q_clothes:
+            match_count = sum(1 for c in q_clothes if c in cand_clothes or (c == "attire" and len(cand_clothes) > 0))
+            score_clothes = match_count / len(q_clothes)
+        else:
+            score_clothes = 1.0
+            
+        # Color binding match
+        color_bindings = parsed["color_bindings"]
+        cand_colors = cand_meta["colors"]
+        if color_bindings:
+            match_count = 0
+            for item, color in color_bindings.items():
+                if item in cand_colors and cand_colors[item] == color:
+                    match_count += 1
+                elif item == "attire" and any(c == color for c in cand_colors.values()):
+                    match_count += 1
+            score_colors = match_count / len(color_bindings)
+        else:
+            score_colors = 1.0
+            
+        # Scene match
+        q_scene = parsed["scene"]
+        cand_scene = cand_meta["scene"]
+        if q_scene:
+            score_scene = 1.0 if q_scene == cand_scene or (q_scene in ["indoor", "outdoor"] and cand_scene in ["indoor", "outdoor"]) else 0.0
+        else:
+            score_scene = 1.0
+            
+        # Style match
+        q_style = parsed["style"]
+        cand_style = cand_meta["style"]
+        if q_style:
+            score_style = 1.0 if q_style == cand_style else 0.0
+        else:
+            score_style = 1.0
+            
+        # Scoring function:
+        # 0.45 * CLIP + 0.10 * Caption + 0.20 * Clothes + 0.15 * Colors + 0.05 * Scene + 0.05 * Style
+        final_score = (
+            0.45 * score_clip +
+            0.10 * score_caption +
+            0.20 * score_clothes +
+            0.15 * score_colors +
+            0.05 * score_scene +
+            0.05 * score_style
+        )
+        
+        ranked_results.append({
+            "id": cid,
+            "image_path": cand_meta["image_path"],
+            "image_abs_path": os.path.join(data_dir, cand_meta["image_path"]),
+            "caption": cand_meta["caption"],
+            "scene": cand_meta["scene"],
+            "style": cand_meta["style"],
+            "clothes": cand_meta["clothes"],
+            "colors": cand_meta["colors"],
+            "bbox": cand_meta["bbox"],
+            "score": float(final_score),
+            "score_breakdown": {
+                "clip": float(score_clip),
+                "caption": float(score_caption),
+                "clothes": float(score_clothes),
+                "colors": float(score_colors),
+                "scene": float(score_scene),
+                "style": float(score_style)
+            }
         })
         
-    return results, parsed
+    # Sort candidates by final score descending
+    ranked_results.sort(key=lambda x: x["score"], reverse=True)
+    return ranked_results[:top_k], parsed
 
 def main():
     args = parse_args()
@@ -214,15 +257,15 @@ def main():
         query=args.query,
         index_dir=args.index_dir,
         data_dir=args.data_dir,
-        top_k=args.top_k,
-        w_global=args.w_global,
-        w_upper=args.w_upper,
-        w_lower=args.w_lower
+        top_k=args.top_k
     )
     
     print(f"Top {args.top_k} results for query '{args.query}':")
     for i, res in enumerate(results):
-        print(f"{i+1}. Image: {res['image_path']} | Score: {res['score']:.4f} | BBox: {res['bbox']}")
+        print(f"\n{i+1}. Image: {res['image_path']} | Final Score: {res['score']:.4f}")
+        print(f"   Caption: '{res['caption']}'")
+        print(f"   Attributes: Scene={res['scene']} | Style={res['style']} | Clothes={res['clothes']} | Colors={res['colors']}")
+        print(f"   Breakdown: {res['score_breakdown']}")
 
 if __name__ == "__main__":
     main()
