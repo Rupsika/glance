@@ -247,32 +247,29 @@ top_k = st.sidebar.slider("Number of results (Top-K)", 1, 24, 8)
 if "search_query" not in st.session_state:
     st.session_state.search_query = "A red tie and a white shirt in a formal setting."
 
-def apply_preset(query_text):
-    st.session_state.search_query = query_text
+eval_queries = [
+    "A person in a bright yellow raincoat.",
+    "Professional business attire inside a modern office.",
+    "Someone wearing a blue shirt sitting on a park bench.",
+    "Casual weekend outfit for a city walk.",
+    "A red tie and a white shirt in a formal setting."
+]
 
-# Clickable presets
-st.markdown('<p class="presets-label">💡 Preset Evaluation Queries (Click to load):</p>', unsafe_allow_html=True)
-col1, col2, col3, col4, col5 = st.columns(5)
-with col1:
-    if st.button("🌦️ Yellow Raincoat", use_container_width=True, key="p1"):
-        apply_preset("A person in a bright yellow raincoat.")
-        st.rerun()
-with col2:
-    if st.button("💼 Office Attire", use_container_width=True, key="p2"):
-        apply_preset("Professional business attire inside a modern office.")
-        st.rerun()
-with col3:
-    if st.button("🏞️ Blue Shirt on Bench", use_container_width=True, key="p3"):
-        apply_preset("Someone wearing a blue shirt sitting on a park bench.")
-        st.rerun()
-with col4:
-    if st.button("🚶 City Walk Outfit", use_container_width=True, key="p4"):
-        apply_preset("Casual weekend outfit for a city walk.")
-        st.rerun()
-with col5:
-    if st.button("👔 Red Tie & White Shirt", use_container_width=True, key="p5"):
-        apply_preset("A red tie and a white shirt in a formal setting.")
-        st.rerun()
+# Synchronize selectbox selection with session state search_query
+default_idx = 0
+if st.session_state.search_query in eval_queries:
+    default_idx = eval_queries.index(st.session_state.search_query) + 1
+
+st.markdown('<p class="presets-label">💡 Preset Evaluation Queries:</p>', unsafe_allow_html=True)
+preset_query = st.selectbox(
+    "Select a preset query to auto-populate search:",
+    options=["Custom Search (Type below)..."] + eval_queries,
+    index=default_idx,
+    key="preset_select"
+)
+
+if preset_query != "Custom Search (Type below)...":
+    st.session_state.search_query = preset_query
 
 # Main query input
 st.write("---")
@@ -329,7 +326,7 @@ if st.session_state.search_query:
                         res["image_abs_path"], res["bbox"], True if res["bbox"] else False
                     )
                     
-                    st.image(overlay_img, use_container_width=True)
+                    st.image(overlay_img, use_column_width=True)
                     
                     st.markdown(f"""
                     <div class="result-card-info">
@@ -365,9 +362,9 @@ if st.session_state.search_query:
                     with st.expander("🔍 Show Crops & Score Explainability"):
                         crop_col1, crop_col2 = st.columns(2)
                         with crop_col1:
-                            st.image(upper_crop, caption="Upper Crop", use_container_width=True)
+                            st.image(upper_crop, caption="Upper Crop", use_column_width=True)
                         with crop_col2:
-                            st.image(lower_crop, caption="Lower Crop", use_container_width=True)
+                            st.image(lower_crop, caption="Lower Crop", use_column_width=True)
                             
                         # Show Score Breakdown Progress Bars
                         st.markdown("<small>**Late-Fusion Score Weights:**</small>", unsafe_allow_html=True)
