@@ -340,7 +340,7 @@ if st.session_state.search_query:
                         res["image_abs_path"], res["bbox"], True if res["bbox"] else False
                     )
                     
-                    st.image(overlay_img, use_column_width=True)
+                    st.image(overlay_img, use_container_width=True)
                     
                     st.markdown(f"""
                     <div class="result-card-info">
@@ -376,9 +376,9 @@ if st.session_state.search_query:
                     with st.expander("🔍 Show Crops & Score Explainability"):
                         crop_col1, crop_col2 = st.columns(2)
                         with crop_col1:
-                            st.image(upper_crop, caption="Upper Crop", use_column_width=True)
+                            st.image(upper_crop, caption="Upper Crop", use_container_width=True)
                         with crop_col2:
-                            st.image(lower_crop, caption="Lower Crop", use_column_width=True)
+                            st.image(lower_crop, caption="Lower Crop", use_container_width=True)
                             
                         # Show Score Breakdown Progress Bars
                         st.markdown("<small>**Late-Fusion Score Weights:**</small>", unsafe_allow_html=True)
