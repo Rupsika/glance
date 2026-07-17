@@ -157,7 +157,7 @@ def main():
         batch_bboxes.append(bbox)
         
         # Trigger batch inference when batch size is reached
-        if len(global_images) >= args.batch_size or i == len(image_paths) - 1:
+        if len(global_images) >= args.batch_size:
             # Global
             g_emb = extract_embeddings_batch(global_images, clip_model, clip_processor, device)
             global_features_list.append(g_emb)
@@ -186,6 +186,25 @@ def main():
             batch_img_paths = []
             batch_has_person = []
             batch_bboxes = []
+            
+    # Flush any remaining images in the final batch
+    if len(global_images) > 0:
+        g_emb = extract_embeddings_batch(global_images, clip_model, clip_processor, device)
+        global_features_list.append(g_emb)
+        
+        u_emb = extract_embeddings_batch(upper_images, clip_model, clip_processor, device)
+        upper_features_list.append(u_emb)
+        
+        l_emb = extract_embeddings_batch(lower_images, clip_model, clip_processor, device)
+        lower_features_list.append(l_emb)
+        
+        for idx in range(len(global_images)):
+            metadata.append({
+                "id": len(metadata),
+                "image_path": batch_img_paths[idx],
+                "has_person": batch_has_person[idx],
+                "bbox": batch_bboxes[idx]
+            })
             
     # Concatenate features
     global_features = np.concatenate(global_features_list, axis=0).astype('float32')

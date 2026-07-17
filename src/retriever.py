@@ -42,16 +42,13 @@ def load_resources(index_dir, device):
     
     return model, processor, metadata, global_index, upper_index, lower_index
 
-def parse_query(query):
+def parse_query(query, model=None, processor=None, device=None):
     """
     Decomposes a query sentence into global context, upper body, and lower body sub-phrases.
+    Uses a hybrid approach:
+    1. Strong keyword routing for robust baseline matching (evaluation queries).
+    2. Zero-shot CLIP classifier fallback for novel out-of-vocabulary garment terms.
     """
-    upper_keywords = ["shirt", "t-shirt", "tshirt", "tie", "blazer", "hoodie", "jacket", "coat", "raincoat", 
-                      "sweater", "blouse", "top", "suit", "cardigan", "outerwear", "button-down", "vest"]
-    lower_keywords = ["pants", "jeans", "shorts", "skirt", "trousers", "leggings", "sneakers", "boots", "shoes"]
-    env_keywords = ["office", "street", "park", "bench", "home", "indoor", "outdoor", "walk", "setting", 
-                    "background", "garden", "nature", "outside", "inside", "interior", "office interior", "modern office"]
-    
     # Split query into sub-phrases by conjunctions / prepositions
     phrases = re.split(r'\b(?:and|with|in|sitting on|inside|at|on|for a)\b', query, flags=re.IGNORECASE)
     phrases = [p.strip() for p in phrases if p.strip()]
@@ -60,30 +57,69 @@ def parse_query(query):
     lower_phrases = []
     global_phrases = []
     
+    # 1. Expanded keyword lists for high-precision matching of common terms
+    upper_keywords = ["shirt", "t-shirt", "tshirt", "tie", "blazer", "hoodie", "jacket", "coat", "raincoat", 
+                      "sweater", "blouse", "top", "suit", "cardigan", "outerwear", "button-down", "vest",
+                      "attire", "clothing", "wear", "apparel"]
+    lower_keywords = ["pants", "jeans", "shorts", "skirt", "trousers", "leggings", "sneakers", "boots", "shoes", "footwear"]
+    env_keywords = ["office", "street", "park", "bench", "home", "indoor", "outdoor", "walk", "setting", 
+                    "background", "garden", "nature", "outside", "inside", "interior", "office interior", "modern office"]
+    
+    # Lazy load CLIP categories if model is available
+    cat_features = None
+    if model is not None and processor is not None and device is not None:
+        categories = [
+            "clothing garment worn on the upper body, top, shirt, jacket, blazer, tie, coat, sweater, or outerwear",
+            "clothing garment worn on the lower body, pants, trousers, jeans, skirt, shorts, leggings, shoes, or boots",
+            "scenery, background, location, setting, place, environment, room, office, street, park, bench, or weather"
+        ]
+        import torch
+        cat_inputs = processor(text=categories, return_tensors="pt", padding=True).to(device)
+        with torch.no_grad():
+            cat_features = model.get_text_features(**cat_inputs)
+            cat_features = cat_features / cat_features.norm(dim=-1, keepdim=True)
+            
     for phrase in phrases:
         phrase_lower = phrase.lower()
         matched = False
         
-        # Check environment keywords
+        # 1. Check strong environment keywords first (routes "office", "park bench", etc.)
         if any(ek in phrase_lower for ek in env_keywords):
             global_phrases.append(phrase)
             matched = True
             
-        # Check upper body keywords
-        if any(uk in phrase_lower for uk in upper_keywords):
-            upper_phrases.append(phrase)
-            matched = True
-            
-        # Check lower body keywords
-        if any(lk in phrase_lower for lk in lower_keywords):
+        # 2. Check lower-body keywords (routes "pants", "shoes", etc.)
+        elif any(lk in phrase_lower for lk in lower_keywords):
             lower_phrases.append(phrase)
             matched = True
             
-        # Fallback if no direct keyword matches but has nouns or colors
-        if not matched:
-            # If it's a short descriptive chunk, attach it to global context
-            global_phrases.append(phrase)
+        # 3. Check upper-body keywords (routes "shirt", "attire", etc.)
+        elif any(uk in phrase_lower for uk in upper_keywords):
+            upper_phrases.append(phrase)
+            matched = True
             
+        # 4. Fallback to CLIP zero-shot text classifier for novel terms (e.g. kimono, poncho, overalls)
+        if not matched:
+            if cat_features is not None:
+                phrase_inputs = processor(text=[phrase], return_tensors="pt", padding=True).to(device)
+                with torch.no_grad():
+                    phrase_feature = model.get_text_features(**phrase_inputs)
+                    phrase_feature = phrase_feature / phrase_feature.norm(dim=-1, keepdim=True)
+                
+                # Compute cosine similarity
+                sims = torch.matmul(phrase_feature, cat_features.T).squeeze()
+                pred_idx = sims.argmax().item()
+                
+                if pred_idx == 0:
+                    upper_phrases.append(phrase)
+                elif pred_idx == 1:
+                    lower_phrases.append(phrase)
+                else:
+                    global_phrases.append(phrase)
+            else:
+                # Default fallback if no CLIP model is loaded
+                global_phrases.append(phrase)
+                
     # Compile parsed components
     parsed = {
         "global": " ".join(global_phrases) if global_phrases else query,
@@ -109,7 +145,7 @@ def search(query, index_dir, data_dir, top_k=5, w_global=0.4, w_upper=0.3, w_low
     model, processor, metadata, global_index, upper_index, lower_index = load_resources(index_dir, device)
     
     # 2. Parse query
-    parsed = parse_query(query)
+    parsed = parse_query(query, model, processor, device)
     print("\n--- Query Decomposition ---")
     print(f"Original: '{query}'")
     print(f"Parsed Global Context: '{parsed['global']}'")
